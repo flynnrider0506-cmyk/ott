@@ -1,135 +1,100 @@
-name: Weekly OTT Releases Notification
+name: Weekly OTT Releases
 
 on:
-  schedule:
-    # Run every Friday at 10:00 IST (04:30 UTC)
-    - cron: '30 4 * * 5'
-    # Daily test run at 10:05 IST (04:35 UTC) - remove after testing
-    - cron: '35 4 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: "0 10 * * 5" # Runs every Friday at 10:00 UTC (~3:30 PM IST)
 
 jobs:
-  notify:
+  fetch-and-send:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests python-telegram-bot
 
-      - name: Send OTT Releases
+      - name: Run script
         env:
-          STREAMING_AVAILABILITY_KEY: ${{ secrets.STREAMING_AVAILABILITY_KEY }}
-          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STREAMING_API_KEY: ${{ secrets.STREAMING_API_KEY }}
+          OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
         run: |
-          python << 'EOF'
-          import os
-          import requests
-          from datetime import datetime, timedelta
+          import os, requests, datetime
 
-          def fetch_releases(content_type):
-              """Fetch releases of type 'movie' or 'series' for upcoming Friday"""
-              api_key = os.getenv("STREAMING_AVAILABILITY_KEY")
-              today = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST now
-              days_ahead = (4 - today.weekday()) % 7  # 4 = Friday
-              if days_ahead == 0:
-                  days_ahead = 7
-              target_date = today + timedelta(days=days_ahead)
-              target_str = target_date.strftime("%Y-%m-%d")
+          TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
+          TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+          STREAM_KEY = os.getenv("STREAMING_API_KEY")
+          OMDB_KEY = os.getenv("OMDB_API_KEY")
 
-              url = "https://streaming-availability.p.rapidapi.com/search/filters"
-              headers = {
-                  "x-rapidapi-key": api_key,
-                  "x-rapidapi-host": "streaming-availability.p.rapidapi.com"
+          def send_msg(text):
+              url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+              requests.post(url, data={"chat_id": TG_CHAT_ID, "text": text})
+
+          today = datetime.date.today()
+          friday = today + datetime.timedelta((4 - today.weekday()) % 7)
+          start = friday.isoformat()
+          end = (friday + datetime.timedelta(days=7)).isoformat()
+
+          headers = {"X-RapidAPI-Key": STREAM_KEY, "X-RapidAPI-Host": "streaming-availability.p.rapidapi.com"}
+
+          def fetch_releases(type_):
+              url = "https://streaming-availability.p.rapidapi.com/v2/search/filters"
+              query = {
+                "services": "netflix,prime,hbo,hotstar,zee5,sonyliv,jio",
+                "country": "in",
+                "type": type_,
+                "order_by": "popularity",
+                "output_language": "en",
+                "show_type": "all",
+                "release_date_from": start,
+                "release_date_to": end,
               }
-              params = {
-                  "country": "in",
-                  "type": content_type,
-                  "release_date_from": target_str,
-                  "release_date_until": target_str,
-                  "order_by": "popularity",
-                  "desc": "true",
-                  "output_language": "en",
-                  "show_type": "all"
-              }
-              resp = requests.get(url, headers=headers, params=params)
-              if resp.status_code != 200:
-                  print(f"Error fetching {content_type}s: {resp.status_code}")
-                  return []
-              data = resp.json()
-              return data.get("result", [])
+              r = requests.get(url, headers=headers, params=query)
+              print(f"RAW {type_.upper()} RESPONSE:", r.text[:2000])  # log first 2000 chars
+              if r.status_code == 200:
+                  return r.json().get("result", [])
+              return []
 
-          def get_imdb_rating_and_year(imdb_id):
-              if not imdb_id:
-                  return ("N/A", "N/A")
-              omdb_key = os.getenv("OMDB_API_KEY")
-              url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={omdb_key}"
-              try:
-                  resp = requests.get(url, timeout=10)
-                  if resp.status_code != 200:
-                      return ("N/A", "N/A")
-                  d = resp.json()
-                  rating = d.get("imdbRating", "N/A")
-                  year = d.get("Year", "N/A")
-                  return (rating, year)
-              except Exception as e:
-                  print("OMDb fetch error:", e)
-                  return ("N/A", "N/A")
-
-          def chunk_list(lst, n):
-              """Yield successive n-sized chunks from lst."""
-              for i in range(0, len(lst), n):
-                  yield lst[i:i + n]
-
-          def send_telegram_message(text):
-              bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-              chat_id = os.getenv("TELEGRAM_CHAT_ID")
-              url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-              resp = requests.post(url, data={"chat_id": chat_id, "text": text})
-              if resp.status_code != 200:
-                  print("Telegram send error:", resp.text)
-
-          def format_and_send(content_list, header):
-              if not content_list:
-                  send_telegram_message(f"{header}\nNo releases found for this Friday.")
-                  return
-
-              lines = [header]
-              for item in content_list:
-                  title = item.get("title", "Unknown Title")
-                  imdb_id = item.get("imdbId")
-                  rating, year = get_imdb_rating_and_year(imdb_id)
-                  release_date = item.get("originalRelease", "N/A")
-                  if release_date != "N/A":
-                      try:
-                          release_date = datetime.strptime(release_date[:10], "%Y-%m-%d").strftime("%d %b %Y")
-                      except:
-                          pass
-                  streaming_info = item.get("streamingInfo", {}).get("in", {})
-                  platforms = ", ".join(streaming_info.keys()) if streaming_info else "N/A"
-                  line = f"{title} ({year}) - IMDb: {rating} - {platforms} - Release: {release_date}"
-                  lines.append(line)
-
-              # Split into messages of max 10 lines each (header + 9 items)
-              chunks = list(chunk_list(lines[1:], 9))
-              for idx, chunk in enumerate(chunks):
-                  msg = lines[0] + "\n"
-                  msg += "\n".join(f"{i+1 + idx*9}. {line}" for i, line in enumerate(chunk))
-                  send_telegram_message(msg)
+          def imdb_rating(title):
+              url = f"http://www.omdbapi.com/?t={title}&apikey={OMDB_KEY}"
+              r = requests.get(url)
+              if r.status_code == 200:
+                  data = r.json()
+                  return data.get("imdbRating", "N/A")
+              return "N/A"
 
           movies = fetch_releases("movie")
           series = fetch_releases("series")
 
-          format_and_send(movies[:10], "🎬 MOVIES — Upcoming Friday Releases")
-          format_and_send(series[:10], "📺 SERIES — Upcoming Friday Releases")
+          send_msg(f"🔎 Found {len(movies)} movies, {len(series)} series releasing between {start} and {end}")
 
-          print("Done sending messages.")
-          EOF
+          def format_list(items, label):
+              if not items:
+                  return f"❌ No {label} found this week"
+              # Add IMDb ratings
+              enriched = []
+              for it in items:
+                  title = it.get("title") or "Unknown"
+                  date = it.get("release_date") or "N/A"
+                  rating = imdb_rating(title)
+                  enriched.append((title, rating, date))
+              # Sort by IMDb
+              enriched.sort(key=lambda x: float(x[1]) if x[1] != "N/A" else 0, reverse=True)
+              text = f"🎬 {label.upper()}\n"
+              for i, (title, rating, date) in enumerate(enriched[:10], 1):
+                  text += f"{i}. {title} ({date}) - IMDb: {rating}\n"
+              return text
+
+          if movies:
+              send_msg(format_list(movies, "Movies"))
+          if series:
+              send_msg(format_list(series, "Series"))
