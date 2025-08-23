@@ -1,1 +1,2 @@
-requests
+# Dependencies for the OTT Weekly Releases Bot
+requests>=2.25.0
