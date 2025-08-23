@@ -1,7 +1,7 @@
-name: Weekly OTT Releases
+name: Weekly OTT Releases Notification
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering
   schedule:
     - cron: "0 10 * * 5" # Runs every Friday at 10:00 UTC (~3:30 PM IST)
 
@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -19,82 +19,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests python-telegram-bot
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run notification script
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STREAMING_API_KEY: ${{ secrets.STREAMING_API_KEY }}
           OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
-        run: |
-          import os, requests, datetime
-
-          TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
-          TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-          STREAM_KEY = os.getenv("STREAMING_API_KEY")
-          OMDB_KEY = os.getenv("OMDB_API_KEY")
-
-          def send_msg(text):
-              url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-              requests.post(url, data={"chat_id": TG_CHAT_ID, "text": text})
-
-          today = datetime.date.today()
-          friday = today + datetime.timedelta((4 - today.weekday()) % 7)
-          start = friday.isoformat()
-          end = (friday + datetime.timedelta(days=7)).isoformat()
-
-          headers = {"X-RapidAPI-Key": STREAM_KEY, "X-RapidAPI-Host": "streaming-availability.p.rapidapi.com"}
-
-          def fetch_releases(type_):
-              url = "https://streaming-availability.p.rapidapi.com/v2/search/filters"
-              query = {
-                "services": "netflix,prime,hbo,hotstar,zee5,sonyliv,jio",
-                "country": "in",
-                "type": type_,
-                "order_by": "popularity",
-                "output_language": "en",
-                "show_type": "all",
-                "release_date_from": start,
-                "release_date_to": end,
-              }
-              r = requests.get(url, headers=headers, params=query)
-              print(f"RAW {type_.upper()} RESPONSE:", r.text[:2000])  # log first 2000 chars
-              if r.status_code == 200:
-                  return r.json().get("result", [])
-              return []
-
-          def imdb_rating(title):
-              url = f"http://www.omdbapi.com/?t={title}&apikey={OMDB_KEY}"
-              r = requests.get(url)
-              if r.status_code == 200:
-                  data = r.json()
-                  return data.get("imdbRating", "N/A")
-              return "N/A"
-
-          movies = fetch_releases("movie")
-          series = fetch_releases("series")
-
-          send_msg(f"🔎 Found {len(movies)} movies, {len(series)} series releasing between {start} and {end}")
-
-          def format_list(items, label):
-              if not items:
-                  return f"❌ No {label} found this week"
-              # Add IMDb ratings
-              enriched = []
-              for it in items:
-                  title = it.get("title") or "Unknown"
-                  date = it.get("release_date") or "N/A"
-                  rating = imdb_rating(title)
-                  enriched.append((title, rating, date))
-              # Sort by IMDb
-              enriched.sort(key=lambda x: float(x[1]) if x[1] != "N/A" else 0, reverse=True)
-              text = f"🎬 {label.upper()}\n"
-              for i, (title, rating, date) in enumerate(enriched[:10], 1):
-                  text += f"{i}. {title} ({date}) - IMDb: {rating}\n"
-              return text
-
-          if movies:
-              send_msg(format_list(movies, "Movies"))
-          if series:
-              send_msg(format_list(series, "Series"))
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python send_ott_updates.py
